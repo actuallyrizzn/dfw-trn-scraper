@@ -16,8 +16,19 @@ import re
 import logging
 import json
 import concurrent.futures
+import signal
+import threading
 
 DB_FILE = 'attendees.db'
+
+# Global flag for graceful shutdown
+shutdown_requested = False
+
+def signal_handler(signum, frame):
+    """Handle Ctrl+C gracefully"""
+    global shutdown_requested
+    logging.info("Shutdown requested. Finishing current tasks...")
+    shutdown_requested = True
 
 # --- DB SCHEMA ---
 SCHEMA = '''
@@ -248,36 +259,63 @@ class DFWTRNDBScraper:
 
     def upsert_attendee(self, attendee, event_id):
         def do_write():
+            # Ensure event_id is always available for error logging
+            original_event_id = event_id
             try:
                 # Check required fields
                 if not attendee['date'] or not attendee['name']:
                     logging.error(f"Skipping attendee with missing required fields: {attendee}")
                     return None
+                
+                # Ensure all values are the correct type
+                event_id = int(event_id)
+                event_date = str(attendee['date']).strip()
+                full_name = str(attendee['name']).strip()
+                first_name = str(attendee['first_name']).strip() if attendee['first_name'] else ''
+                last_name = str(attendee['last_name']).strip() if attendee['last_name'] else ''
+                profile_url = str(attendee['profile_url']).strip() if attendee['profile_url'] else None
+                is_anonymous = bool(attendee['is_anonymous'])
+                guest_count = int(attendee['guest_count']) if attendee['guest_count'] else 0
+                
                 with self.conn:
                     cur = self.conn.execute('''
                         INSERT OR IGNORE INTO attendees (event_id, event_date, full_name, first_name, last_name, profile_url, is_anonymous, guest_count)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         event_id,
-                        attendee['date'],
-                        attendee['name'],
-                        attendee['first_name'],
-                        attendee['last_name'],
-                        attendee['profile_url'],
-                        attendee['is_anonymous'],
-                        attendee['guest_count']
+                        event_date,
+                        full_name,
+                        first_name,
+                        last_name,
+                        profile_url,
+                        is_anonymous,
+                        guest_count
                     ))
                     if cur.lastrowid:
                         attendee_id = cur.lastrowid
                     else:
+                        # Try to find existing record
                         row = self.conn.execute('''
                             SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
-                        ''', (event_id, attendee['name'], attendee['date'])).fetchone()
+                        ''', (event_id, full_name, event_date)).fetchone()
                         attendee_id = row['id'] if row else None
                     return attendee_id
+            except sqlite3.IntegrityError as e:
+                if 'UNIQUE constraint failed' in str(e):
+                    logging.warning(f"Duplicate attendee skipped: {attendee['name']} for event {original_event_id}")
+                    # Try to get existing attendee_id
+                    try:
+                        row = self.conn.execute('''
+                            SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
+                        ''', (original_event_id, str(attendee['name']).strip(), str(attendee['date']).strip())).fetchone()
+                        return row['id'] if row else None
+                    except:
+                        return None
+                else:
+                    logging.error(f"Integrity error for attendee: {attendee} (event_id={original_event_id}): {e}")
+                    return None
             except Exception as e:
-                self.conn.rollback()
-                logging.error(f"DB insert error for attendee: {attendee} (event_id={event_id}): {e}")
+                logging.error(f"DB insert error for attendee: {attendee} (event_id={original_event_id}): {e}")
                 return None
         return self._retry_db_write(do_write)
 
@@ -285,8 +323,24 @@ class DFWTRNDBScraper:
         def do_write():
             try:
                 if attendee_id is None:
-                    logging.error(f"Skipping profile insert because attendee_id is None: profile_url={profile_url}, profile_data={profile_data}")
+                    logging.error(f"Skipping profile insert because attendee_id is None: profile_url={profile_url}")
                     return None
+                
+                # Ensure all values are the correct type
+                attendee_id = int(attendee_id)
+                profile_url = str(profile_url).strip()
+                
+                # Convert profile data values to strings
+                email = str(profile_data.get('email', '')).strip() if profile_data.get('email') else None
+                phone = str(profile_data.get('phone', '')).strip() if profile_data.get('phone') else None
+                company = str(profile_data.get('company', '')).strip() if profile_data.get('company') else None
+                job_title = str(profile_data.get('title') or profile_data.get('job_title', '')).strip() if (profile_data.get('title') or profile_data.get('job_title')) else None
+                bio = str(profile_data.get('bio', '')).strip() if profile_data.get('bio') else None
+                member_since = str(profile_data.get('member since') or profile_data.get('member_since', '')).strip() if (profile_data.get('member since') or profile_data.get('member_since')) else None
+                location = str(profile_data.get('city') or profile_data.get('location', '')).strip() if (profile_data.get('city') or profile_data.get('location')) else None
+                skills = str(profile_data.get('skills', '')).strip() if profile_data.get('skills') else None
+                certifications = str(profile_data.get('certifications', '')).strip() if profile_data.get('certifications') else None
+                
                 with self.conn:
                     cur = self.conn.execute('''
                         INSERT OR IGNORE INTO attendee_profiles (attendee_id, profile_url, email, phone, company, job_title, bio, member_since, location, skills, certifications)
@@ -294,35 +348,57 @@ class DFWTRNDBScraper:
                     ''', (
                         attendee_id,
                         profile_url,
-                        profile_data.get('email'),
-                        profile_data.get('phone'),
-                        profile_data.get('company'),
-                        profile_data.get('title') or profile_data.get('job_title'),
-                        profile_data.get('bio'),
-                        profile_data.get('member since') or profile_data.get('member_since'),
-                        profile_data.get('city') or profile_data.get('location'),
-                        profile_data.get('skills'),
-                        profile_data.get('certifications')
+                        email,
+                        phone,
+                        company,
+                        job_title,
+                        bio,
+                        member_since,
+                        location,
+                        skills,
+                        certifications
                     ))
                     if cur.lastrowid:
                         profile_id = cur.lastrowid
                     else:
+                        # Try to find existing record
                         row = self.conn.execute('''
                             SELECT id FROM attendee_profiles WHERE profile_url=?
                         ''', (profile_url,)).fetchone()
                         profile_id = row['id'] if row else None
-                    # Insert dynamic fields
-                    for k, v in profile_data.items():
-                        if k in ['email', 'phone', 'company', 'title', 'job_title', 'bio', 'member since', 'member_since', 'city', 'location', 'skills', 'certifications']:
-                            continue
-                        self.conn.execute('''
-                            INSERT INTO profile_fields (profile_id, field_name, field_value, field_type)
-                            VALUES (?, ?, ?, ?)
-                        ''', (profile_id, k, v, 'text'))
+                    
+                    # Insert dynamic fields only if we have a valid profile_id
+                    if profile_id:
+                        for k, v in profile_data.items():
+                            if k in ['email', 'phone', 'company', 'title', 'job_title', 'bio', 'member since', 'member_since', 'city', 'location', 'skills', 'certifications']:
+                                continue
+                            try:
+                                field_name = str(k).strip()
+                                field_value = str(v).strip() if v else ''
+                                self.conn.execute('''
+                                    INSERT OR IGNORE INTO profile_fields (profile_id, field_name, field_value, field_type)
+                                    VALUES (?, ?, ?, ?)
+                                ''', (profile_id, field_name, field_value, 'text'))
+                            except Exception as field_error:
+                                logging.warning(f"Failed to insert profile field {k}: {field_error}")
+                    
                     return profile_id
+            except sqlite3.IntegrityError as e:
+                if 'UNIQUE constraint failed' in str(e):
+                    logging.warning(f"Duplicate profile skipped: {profile_url}")
+                    # Try to get existing profile_id
+                    try:
+                        row = self.conn.execute('''
+                            SELECT id FROM attendee_profiles WHERE profile_url=?
+                        ''', (profile_url,)).fetchone()
+                        return row['id'] if row else None
+                    except:
+                        return None
+                else:
+                    logging.error(f"Integrity error for profile: attendee_id={attendee_id}, profile_url={profile_url}: {e}")
+                    return None
             except Exception as e:
-                self.conn.rollback()
-                logging.error(f"DB insert error for profile: attendee_id={attendee_id}, profile_url={profile_url}, profile_data={profile_data}: {e}")
+                logging.error(f"DB insert error for profile: attendee_id={attendee_id}, profile_url={profile_url}: {e}")
                 return None
         return self._retry_db_write(do_write)
 
@@ -366,14 +442,16 @@ class DFWTRNDBScraper:
             try:
                 # Insert attendee
                 attendee_id = self.upsert_attendee(attendee, event_id)
-                attendees_scraped += 1
-                
-                # Extract profile data if profile link exists
-                if attendee.get('profile_url'):
-                    profile_data = self.extract_profile_data(attendee['profile_url'])
-                    if profile_data:
-                        self.upsert_profile(attendee_id, attendee['profile_url'], profile_data)
-                        profiles_scraped += 1
+                if attendee_id is not None:
+                    attendees_scraped += 1
+                    
+                    # Extract profile data if profile link exists
+                    if attendee.get('profile_url'):
+                        profile_data = self.extract_profile_data(attendee['profile_url'])
+                        if profile_data:
+                            profile_id = self.upsert_profile(attendee_id, attendee['profile_url'], profile_data)
+                            if profile_id is not None:
+                                profiles_scraped += 1
                 
             except Exception as e:
                 logging.error(f"Error processing attendee {attendee.get('name', 'unknown')}: {e}")
