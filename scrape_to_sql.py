@@ -248,65 +248,73 @@ class DFWTRNDBScraper:
 
     def upsert_attendee(self, attendee, event_id):
         def do_write():
-            with self.conn:
-                cur = self.conn.execute('''
-                    INSERT OR IGNORE INTO attendees (event_id, event_date, full_name, first_name, last_name, profile_url, is_anonymous, guest_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    event_id,
-                    attendee['date'],
-                    attendee['name'],
-                    attendee['first_name'],
-                    attendee['last_name'],
-                    attendee['profile_url'],
-                    attendee['is_anonymous'],
-                    attendee['guest_count']
-                ))
-                if cur.lastrowid:
-                    attendee_id = cur.lastrowid
-                else:
-                    row = self.conn.execute('''
-                        SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
-                    ''', (event_id, attendee['name'], attendee['date'])).fetchone()
-                    attendee_id = row['id'] if row else None
-                return attendee_id
+            try:
+                with self.conn:
+                    cur = self.conn.execute('''
+                        INSERT OR IGNORE INTO attendees (event_id, event_date, full_name, first_name, last_name, profile_url, is_anonymous, guest_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        event_id,
+                        attendee['date'],
+                        attendee['name'],
+                        attendee['first_name'],
+                        attendee['last_name'],
+                        attendee['profile_url'],
+                        attendee['is_anonymous'],
+                        attendee['guest_count']
+                    ))
+                    if cur.lastrowid:
+                        attendee_id = cur.lastrowid
+                    else:
+                        row = self.conn.execute('''
+                            SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
+                        ''', (event_id, attendee['name'], attendee['date'])).fetchone()
+                        attendee_id = row['id'] if row else None
+                    return attendee_id
+            except Exception as e:
+                logging.error(f"DB insert error for attendee: {attendee} (event_id={event_id}): {e}")
+                raise
         return self._retry_db_write(do_write)
 
     def upsert_profile(self, attendee_id, profile_url, profile_data):
         def do_write():
-            with self.conn:
-                cur = self.conn.execute('''
-                    INSERT OR IGNORE INTO attendee_profiles (attendee_id, profile_url, email, phone, company, job_title, bio, member_since, location, skills, certifications)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    attendee_id,
-                    profile_url,
-                    profile_data.get('email'),
-                    profile_data.get('phone'),
-                    profile_data.get('company'),
-                    profile_data.get('title') or profile_data.get('job_title'),
-                    profile_data.get('bio'),
-                    profile_data.get('member since') or profile_data.get('member_since'),
-                    profile_data.get('city') or profile_data.get('location'),
-                    profile_data.get('skills'),
-                    profile_data.get('certifications')
-                ))
-                if cur.lastrowid:
-                    profile_id = cur.lastrowid
-                else:
-                    row = self.conn.execute('''
-                        SELECT id FROM attendee_profiles WHERE profile_url=?
-                    ''', (profile_url,)).fetchone()
-                    profile_id = row['id'] if row else None
-                # Insert dynamic fields
-                for k, v in profile_data.items():
-                    if k in ['email', 'phone', 'company', 'title', 'job_title', 'bio', 'member since', 'member_since', 'city', 'location', 'skills', 'certifications']:
-                        continue
-                    self.conn.execute('''
-                        INSERT INTO profile_fields (profile_id, field_name, field_value, field_type)
-                        VALUES (?, ?, ?, ?)
-                    ''', (profile_id, k, v, 'text'))
-                return profile_id
+            try:
+                with self.conn:
+                    cur = self.conn.execute('''
+                        INSERT OR IGNORE INTO attendee_profiles (attendee_id, profile_url, email, phone, company, job_title, bio, member_since, location, skills, certifications)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        attendee_id,
+                        profile_url,
+                        profile_data.get('email'),
+                        profile_data.get('phone'),
+                        profile_data.get('company'),
+                        profile_data.get('title') or profile_data.get('job_title'),
+                        profile_data.get('bio'),
+                        profile_data.get('member since') or profile_data.get('member_since'),
+                        profile_data.get('city') or profile_data.get('location'),
+                        profile_data.get('skills'),
+                        profile_data.get('certifications')
+                    ))
+                    if cur.lastrowid:
+                        profile_id = cur.lastrowid
+                    else:
+                        row = self.conn.execute('''
+                            SELECT id FROM attendee_profiles WHERE profile_url=?
+                        ''', (profile_url,)).fetchone()
+                        profile_id = row['id'] if row else None
+                    # Insert dynamic fields
+                    for k, v in profile_data.items():
+                        if k in ['email', 'phone', 'company', 'title', 'job_title', 'bio', 'member since', 'member_since', 'city', 'location', 'skills', 'certifications']:
+                            continue
+                        self.conn.execute('''
+                            INSERT INTO profile_fields (profile_id, field_name, field_value, field_type)
+                            VALUES (?, ?, ?, ?)
+                        ''', (profile_id, k, v, 'text'))
+                    return profile_id
+            except Exception as e:
+                logging.error(f"DB insert error for profile: attendee_id={attendee_id}, profile_url={profile_url}, profile_data={profile_data}: {e}")
+                raise
         return self._retry_db_write(do_write)
 
     def upsert_event(self, event_id, event_name, event_date, event_url, total_attendees):
@@ -340,49 +348,27 @@ class DFWTRNDBScraper:
             db.commit()
             logging.info(f"Created new event record: {event_name}")
         
-        # Scrape attendees
+        # Scrape attendees using the proper method
+        attendees = self.extract_all_attendees(event_url)
         attendees_scraped = 0
         profiles_scraped = 0
         
-        for page_num in range(1, 100):  # Limit to prevent infinite loops
-            page_url = f"{event_url}&page={page_num}"
-            logging.info(f"  Scraping page {page_num}...")
-            
-            soup = self.get_page(page_url)
-            if not soup:
-                break
-            
-            # Find attendee entries
-            attendee_entries = soup.find_all('div', class_='attendeeEntry')
-            if not attendee_entries:
-                logging.info(f"  No more attendees found on page {page_num}")
-                break
-            
-            for entry in attendee_entries:
-                try:
-                    # Extract attendee data
-                    attendee_data = self.extract_attendees_from_page(entry, event_url)
-                    if not attendee_data:
-                        continue
-                    
-                    # Insert attendee
-                    attendee_id = self.upsert_attendee(attendee_data, event_id)
-                    attendees_scraped += 1
-                    
-                    # Extract profile data if profile link exists
-                    if attendee_data.get('profile_url'):
-                        profile_data = self.extract_profile_data(attendee_data['profile_url'])
-                        if profile_data:
-                            self.upsert_profile(attendee_id, attendee_data['profile_url'], profile_data)
-                            profiles_scraped += 1
-                    
-                except Exception as e:
-                    logging.error(f"Error processing attendee entry: {e}")
-                    continue
-            
-            # Add delay between pages
-            if self.delay > 0:
-                time.sleep(self.delay)
+        for attendee in attendees:
+            try:
+                # Insert attendee
+                attendee_id = self.upsert_attendee(attendee, event_id)
+                attendees_scraped += 1
+                
+                # Extract profile data if profile link exists
+                if attendee.get('profile_url'):
+                    profile_data = self.extract_profile_data(attendee['profile_url'])
+                    if profile_data:
+                        self.upsert_profile(attendee_id, attendee['profile_url'], profile_data)
+                        profiles_scraped += 1
+                
+            except Exception as e:
+                logging.error(f"Error processing attendee {attendee.get('name', 'unknown')}: {e}")
+                continue
         
         logging.info(f"Event {event_id} complete: {attendees_scraped} attendees, {profiles_scraped} profiles")
         return attendees_scraped, profiles_scraped
@@ -427,27 +413,39 @@ class DFWTRNDBScraper:
 
 # --- CLI ---
 def main():
-    parser = argparse.ArgumentParser(description='Scrape DFWTRN event attendees and load directly into SQLite DB')
+    parser = argparse.ArgumentParser(description="Scrape DFWTRN event attendees and load directly into SQLite DB")
     parser.add_argument('url', nargs='?', help='Event attendee URL to scrape, or "ALL" to scrape all events')
     parser.add_argument('--delay', type=float, default=1.0, help='Delay between requests (seconds)')
     parser.add_argument('--all', action='store_true', help='Scrape all events listed on the DFWTRN Events page')
     parser.add_argument('--workers', type=int, default=1, help='Number of parallel event workers (default: 1)')
+    parser.add_argument('--limit', type=int, default=None, help='Limit the number of events to scrape (only with --all)')
     args = parser.parse_args()
+    
     scraper = DFWTRNDBScraper(delay=args.delay)
+    
     if args.all or (args.url and args.url.upper() == 'ALL'):
         event_links = scraper.extract_all_event_links()
-        logging.info(f"Starting parallel scrape with {args.workers} workers...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = [executor.submit(scraper.scrape_and_load, url) for url in event_links]
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    logging.error(f"Worker error: {e}")
+        if args.limit is not None:
+            event_links = event_links[:args.limit]
+        logging.info(f"Scraping {len(event_links)} events...")
+        if args.workers > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = {executor.submit(scraper.scrape_and_load, url): url for url in event_links}
+                for future in as_completed(futures):
+                    url = futures[future]
+                    try:
+                        attendees, profiles = future.result()
+                        logging.info(f"{url}: {attendees} attendees, {profiles} profiles")
+                    except Exception as e:
+                        logging.error(f"Error scraping {url}: {e}")
+        else:
+            for url in event_links:
+                scraper.scrape_and_load(url)
     elif args.url:
         scraper.scrape_and_load(args.url)
     else:
         parser.print_help()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main() 
