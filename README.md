@@ -2,6 +2,31 @@
 
 A comprehensive web application for scraping, storing, and exploring DFWTRN event attendee data with rich profile information.
 
+## 📚 Documentation
+
+**📖 [Complete Documentation](docs/README.md)** - Full documentation index with all guides and references
+
+### 🚀 Getting Started
+- **[Installation Guide](docs/installation.md)** - Complete setup instructions for all platforms
+- **[Quick Start Guide](docs/quick-start.md)** - Get up and running in 5 minutes
+- **[Configuration Guide](docs/configuration.md)** - System configuration options
+
+### 🛠 Usage Guides
+- **[Scraping Guide](docs/scraping-guide.md)** - How to scrape attendee data with all options
+- **[Dashboard Guide](docs/dashboard-guide.md)** - Using the web interface and features
+- **[CLI Reference](docs/cli-reference.md)** - Command-line interface documentation
+
+### 🧩 Technical Documentation
+- **[Database Schema](docs/database-schema.md)** - Complete database structure and relationships
+- **[API Reference](docs/api-reference.md)** - REST API documentation with examples
+- **[Data Model](docs/data-model.md)** - Understanding the data structure
+
+### 🔧 Development & Troubleshooting
+- **[Development Setup](docs/development.md)** - Setting up for development
+- **[Testing Guide](docs/testing.md)** - Running tests and test data
+- **[Troubleshooting Guide](docs/troubleshooting.md)** - Common issues and solutions
+- **[Error Reference](docs/error-reference.md)** - Error codes and meanings
+
 ## 🚀 Features
 
 - **Live Data Scraping**: Direct-to-database scraping of attendee lists and profile data
@@ -11,6 +36,8 @@ A comprehensive web application for scraping, storing, and exploring DFWTRN even
 - **API Endpoints**: JSON API for programmatic access
 - **Pagination**: Handle large datasets efficiently
 - **Export Options**: Download data in JSON format
+- **Multi-Worker Support**: Parallel processing for faster scraping
+- **Resumable Scraping**: Safe to re-run without duplicates
 
 ## 📋 Requirements
 
@@ -26,7 +53,9 @@ A comprehensive web application for scraping, storing, and exploring DFWTRN even
    pip install -r requirements.txt
    ```
 
-## 🎯 Usage
+**📖 For detailed installation instructions, see the [Installation Guide](docs/installation.md)**
+
+## 🎯 Quick Start
 
 ### Phase 1: Scrape Data
 ```bash
@@ -41,6 +70,8 @@ python attendee_dashboard.py
 ```
 
 Then open your browser to: `http://localhost:5000`
+
+**📖 For detailed usage instructions, see the [Quick Start Guide](docs/quick-start.md)**
 
 ## 📊 Dashboard Features
 
@@ -68,6 +99,8 @@ Then open your browser to: `http://localhost:5000`
 - **`/api/events`**: Get all events
 - **Query Parameters**: `event_id`, `limit` for filtering
 
+**📖 For complete API documentation, see the [API Reference](docs/api-reference.md)**
+
 ## 🗄 Database Schema
 
 The application uses SQLite with the following tables:
@@ -91,15 +124,21 @@ The application uses SQLite with the following tables:
 - Event metadata and statistics
 - Total attendee counts
 
+**📖 For complete database documentation, see the [Database Schema](docs/database-schema.md)**
+
 ## 🔧 Configuration
 
 ### Scraping Options
 - `--delay`: Request delay between pages (default: 1.0s)
 - `--max-profiles`: Limit profile analysis (deep analysis only)
+- `--workers`: Number of parallel workers (default: 1)
+- `--limit`: Maximum events to scrape
 
 ### Database
 - Database file: `attendees.db` (auto-created)
 - Schema: Auto-initialized on first run
+
+**📖 For detailed configuration options, see the [Configuration Guide](docs/configuration.md)**
 
 ## 🎨 UI Features
 
@@ -154,14 +193,29 @@ The dashboard provides several analytics:
 - **Analytics Dashboard**: Advanced reporting features
 - **Multi-Event Support**: Compare events side-by-side
 
+## 🚨 Troubleshooting
+
+**Common Issues:**
+- **Module not found**: Run `pip install -r requirements.txt`
+- **Database locked**: Use `--workers 1` or restart
+- **Connection timeout**: Increase `--delay` to 2.0+ seconds
+- **Dashboard won't start**: Use `--port 8080` for different port
+
+**📖 For comprehensive troubleshooting, see the [Troubleshooting Guide](docs/troubleshooting.md)**
+
 ## 📞 Support
 
 For issues or questions:
-1. Check the logs for error messages
-2. Verify database file permissions
-3. Ensure all dependencies are installed
-4. Check network connectivity for scraping
+
+1. **Check the [Troubleshooting Guide](docs/troubleshooting.md)** for common solutions
+2. **Review the [Error Reference](docs/error-reference.md)** for specific error codes
+3. **Verify database file permissions** and ensure all dependencies are installed
+4. **Check network connectivity** for scraping issues
 
 ## 📄 License
 
-This project is for educational and research purposes. Please respect the terms of service of the source websites. 
+This project is for educational and research purposes. Please respect the terms of service of the source websites.
+
+---
+
+**📚 [View Complete Documentation](docs/README.md) | [Quick Start](docs/quick-start.md) | [Troubleshooting](docs/troubleshooting.md)** 
