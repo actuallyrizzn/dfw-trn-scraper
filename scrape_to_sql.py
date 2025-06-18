@@ -73,6 +73,51 @@ CREATE TABLE IF NOT EXISTS events (
 # --- LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
+def extract_profile_data_from_html(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    profile_data = {}
+    form_repeater = soup.find('div', id=lambda x: x and 'memberProfile_MemberForm' in x)
+    if form_repeater:
+        field_containers = form_repeater.find_all('div', class_='fieldContainer')
+        for container in field_containers:
+            label_span = container.find('span', id=lambda x: x and 'titleLabel' in x)
+            if not label_span:
+                continue
+            label = label_span.get_text(strip=True)
+            value_span = container.find('span', id=lambda x: x and ('TextBoxLabel' in x or 'DropDownLabel' in x))
+            if not value_span:
+                continue
+            email_link = value_span.find('a', href=lambda x: x and x.startswith('mailto:'))
+            if email_link:
+                value = email_link.get('href').replace('mailto:', '')
+            else:
+                value = value_span.get_text(strip=True)
+            if label and value:
+                if 'first name' in label.lower():
+                    profile_data['first_name'] = value
+                elif 'last name' in label.lower():
+                    profile_data['last_name'] = value
+                elif 'company' in label.lower():
+                    profile_data['company'] = value
+                elif 'job function' in label.lower() or 'title' in label.lower():
+                    profile_data['job_title'] = value
+                elif 'work e-mail' in label.lower() or 'home e-mail' in label.lower():
+                    if 'email' not in profile_data:
+                        profile_data['email'] = value
+                elif 'mobile phone' in label.lower() or 'phone' in label.lower():
+                    profile_data['phone'] = value
+                elif 'business type' in label.lower():
+                    profile_data['business_type'] = value
+                elif 'city' in label.lower():
+                    profile_data['city'] = value
+                else:
+                    field_key = label.lower().replace(' ', '_').replace('*', '')
+                    profile_data[field_key] = value
+    membership_span = soup.find('span', id=lambda x: x and 'membershipDetails' in x)
+    if membership_span:
+        profile_data['membership_level'] = membership_span.get_text(strip=True)
+    return profile_data
+
 class DFWTRNDBScraper:
     def __init__(self, db_file=DB_FILE, delay=1.0):
         self.session = requests.Session()
@@ -183,68 +228,7 @@ class DFWTRNDBScraper:
         soup = self.get_page(profile_url)
         if not soup:
             return {}
-        
-        profile_data = {}
-        logging.info(f"    Analyzing profile page structure...")
-        
-        # Method 1: Extract from DFWTRN-specific profile structure
-        # Look for the member form repeater structure
-        form_repeater = soup.find('div', id=lambda x: x and 'memberProfile_MemberForm' in x)
-        if form_repeater:
-            # Find all field containers
-            field_containers = form_repeater.find_all('div', class_='fieldContainer')
-            
-            for container in field_containers:
-                # Get the label
-                label_span = container.find('span', id=lambda x: x and 'titleLabel' in x)
-                if not label_span:
-                    continue
-                    
-                label = label_span.get_text(strip=True)
-                
-                # Get the value
-                value_span = container.find('span', id=lambda x: x and 'TextBoxLabel' in x or 'DropDownLabel' in x)
-                if not value_span:
-                    continue
-                    
-                # Handle email links specially
-                email_link = value_span.find('a', href=lambda x: x and x.startswith('mailto:'))
-                if email_link:
-                    value = email_link.get('href').replace('mailto:', '')
-                else:
-                    value = value_span.get_text(strip=True)
-                
-                if label and value:
-                    # Map common field names
-                    if 'first name' in label.lower():
-                        profile_data['first_name'] = value
-                    elif 'last name' in label.lower():
-                        profile_data['last_name'] = value
-                    elif 'company' in label.lower():
-                        profile_data['company'] = value
-                    elif 'job function' in label.lower():
-                        profile_data['job_title'] = value
-                    elif 'work e-mail' in label.lower() or 'home e-mail' in label.lower():
-                        if 'email' not in profile_data:  # Prefer work email
-                            profile_data['email'] = value
-                    elif 'mobile phone' in label.lower() or 'phone' in label.lower():
-                        profile_data['phone'] = value
-                    elif 'business type' in label.lower():
-                        profile_data['business_type'] = value
-                    elif 'city' in label.lower():
-                        profile_data['city'] = value
-                    else:
-                        # Store other fields generically
-                        field_key = label.lower().replace(' ', '_').replace('*', '')
-                        profile_data[field_key] = value
-        
-        # Method 2: Extract membership level from header
-        membership_span = soup.find('span', id=lambda x: x and 'membershipDetails' in x)
-        if membership_span:
-            profile_data['membership_level'] = membership_span.get_text(strip=True)
-        
-        logging.info(f"    Extracted profile data: {list(profile_data.keys())}")
-        return profile_data
+        return extract_profile_data_from_html(str(soup))
 
     def upsert_attendee(self, attendee, event_id):
         with self.conn:
