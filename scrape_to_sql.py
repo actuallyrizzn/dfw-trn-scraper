@@ -249,6 +249,10 @@ class DFWTRNDBScraper:
     def upsert_attendee(self, attendee, event_id):
         def do_write():
             try:
+                # Check required fields
+                if not attendee['date'] or not attendee['name']:
+                    logging.error(f"Skipping attendee with missing required fields: {attendee}")
+                    return None
                 with self.conn:
                     cur = self.conn.execute('''
                         INSERT OR IGNORE INTO attendees (event_id, event_date, full_name, first_name, last_name, profile_url, is_anonymous, guest_count)
@@ -272,13 +276,17 @@ class DFWTRNDBScraper:
                         attendee_id = row['id'] if row else None
                     return attendee_id
             except Exception as e:
+                self.conn.rollback()
                 logging.error(f"DB insert error for attendee: {attendee} (event_id={event_id}): {e}")
-                raise
+                return None
         return self._retry_db_write(do_write)
 
     def upsert_profile(self, attendee_id, profile_url, profile_data):
         def do_write():
             try:
+                if attendee_id is None:
+                    logging.error(f"Skipping profile insert because attendee_id is None: profile_url={profile_url}, profile_data={profile_data}")
+                    return None
                 with self.conn:
                     cur = self.conn.execute('''
                         INSERT OR IGNORE INTO attendee_profiles (attendee_id, profile_url, email, phone, company, job_title, bio, member_since, location, skills, certifications)
@@ -313,8 +321,9 @@ class DFWTRNDBScraper:
                         ''', (profile_id, k, v, 'text'))
                     return profile_id
             except Exception as e:
+                self.conn.rollback()
                 logging.error(f"DB insert error for profile: attendee_id={attendee_id}, profile_url={profile_url}, profile_data={profile_data}: {e}")
-                raise
+                return None
         return self._retry_db_write(do_write)
 
     def upsert_event(self, event_id, event_name, event_date, event_url, total_attendees):
