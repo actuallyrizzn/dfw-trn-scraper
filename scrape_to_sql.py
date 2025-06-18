@@ -18,6 +18,7 @@ import json
 import concurrent.futures
 import signal
 import threading
+import queue
 
 DB_FILE = 'attendees.db'
 
@@ -130,6 +131,41 @@ def extract_profile_data_from_html(html):
         profile_data['membership_level'] = membership_span.get_text(strip=True)
     return profile_data
 
+class DatabaseManager:
+    """Thread-safe database connection manager"""
+    def __init__(self, db_file):
+        self.db_file = db_file
+        self._lock = threading.Lock()
+        self._connections = {}
+        
+    def get_connection(self, thread_id=None):
+        """Get a database connection for the current thread"""
+        if thread_id is None:
+            thread_id = threading.get_ident()
+            
+        with self._lock:
+            if thread_id not in self._connections:
+                conn = sqlite3.connect(self.db_file, timeout=60.0)
+                conn.row_factory = sqlite3.Row
+                # Enable WAL mode for better concurrency
+                conn.execute('PRAGMA journal_mode=WAL')
+                conn.execute('PRAGMA synchronous=NORMAL')
+                conn.execute('PRAGMA cache_size=10000')
+                conn.execute('PRAGMA temp_store=MEMORY')
+                self._connections[thread_id] = conn
+                
+        return self._connections[thread_id]
+    
+    def close_all(self):
+        """Close all database connections"""
+        with self._lock:
+            for conn in self._connections.values():
+                try:
+                    conn.close()
+                except:
+                    pass
+            self._connections.clear()
+
 class DFWTRNDBScraper:
     def __init__(self, db_file=DB_FILE, delay=1.0):
         self.session = requests.Session()
@@ -137,14 +173,13 @@ class DFWTRNDBScraper:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
         self.delay = delay
-        # Set a longer timeout for SQLite to reduce 'database is locked' errors
-        self.conn = sqlite3.connect(db_file, timeout=30.0, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        self.db_manager = DatabaseManager(db_file)
         self.ensure_schema()
 
     def ensure_schema(self):
-        with self.conn:
-            self.conn.executescript(SCHEMA)
+        conn = self.db_manager.get_connection()
+        with conn:
+            conn.executescript(SCHEMA)
 
     def get_page(self, url):
         try:
@@ -199,12 +234,26 @@ class DFWTRNDBScraper:
                     # Parse name
                     full_name = name_cell.split('-')[0].strip()
                     if ',' in full_name:
-                        last_name, first_name = [x.strip() for x in full_name.split(',', 1)]
+                        parts = [x.strip() for x in full_name.split(',', 1)]
+                        if len(parts) >= 2:
+                            last_name, first_name = parts[0], parts[1]
+                        else:
+                            last_name, first_name = parts[0], ''
                     elif ' ' in full_name:
-                        first_name, last_name = full_name.split(' ', 1)
+                        parts = full_name.split(' ', 1)
+                        if len(parts) >= 2:
+                            first_name, last_name = parts[0], parts[1]
+                        else:
+                            first_name, last_name = parts[0], ''
                     else:
                         first_name = full_name
                         last_name = ''
+                    
+                    # Ensure we have valid names
+                    if not first_name and not last_name:
+                        first_name = full_name
+                        last_name = ''
+                    
                     attendees.append({
                         'date': date_cell,
                         'name': full_name,
@@ -245,6 +294,8 @@ class DFWTRNDBScraper:
 
     def _retry_db_write(self, func, *args, **kwargs):
         max_retries = 5
+        last_exception = None
+        
         for attempt in range(max_retries):
             try:
                 return func(*args, **kwargs)
@@ -253,36 +304,58 @@ class DFWTRNDBScraper:
                     wait = 2 ** attempt
                     logging.warning(f"DB is locked, retrying in {wait}s (attempt {attempt+1}/{max_retries})...")
                     time.sleep(wait)
+                    last_exception = e
                 else:
+                    # Re-raise non-lock errors immediately
                     raise
-        raise sqlite3.OperationalError("Max retries exceeded due to database lock.")
+            except Exception as e:
+                # Re-raise non-OperationalError exceptions immediately
+                raise
+        
+        # If we get here, we've exhausted retries
+        if last_exception:
+            raise last_exception
+        else:
+            raise sqlite3.OperationalError("Max retries exceeded due to database lock.")
 
     def upsert_attendee(self, attendee, event_id):
         def do_write():
             # Ensure event_id is always available for error logging
             original_event_id = event_id
+            attendee_id = None  # Initialize to avoid scope issues
+            
             try:
                 # Check required fields
-                if not attendee['date'] or not attendee['name']:
+                if not attendee.get('date') or not attendee.get('name'):
                     logging.error(f"Skipping attendee with missing required fields: {attendee}")
                     return None
                 
-                # Ensure all values are the correct type
-                event_id = int(event_id)
+                # Ensure all values are the correct type and not None
+                event_id_int = int(event_id)  # Use different variable name
                 event_date = str(attendee['date']).strip()
                 full_name = str(attendee['name']).strip()
-                first_name = str(attendee['first_name']).strip() if attendee['first_name'] else ''
-                last_name = str(attendee['last_name']).strip() if attendee['last_name'] else ''
-                profile_url = str(attendee['profile_url']).strip() if attendee['profile_url'] else None
-                is_anonymous = bool(attendee['is_anonymous'])
-                guest_count = int(attendee['guest_count']) if attendee['guest_count'] else 0
+                first_name = str(attendee.get('first_name', '')).strip() if attendee.get('first_name') else ''
+                last_name = str(attendee.get('last_name', '')).strip() if attendee.get('last_name') else ''
+                profile_url = str(attendee.get('profile_url', '')).strip() if attendee.get('profile_url') else None
+                is_anonymous = bool(attendee.get('is_anonymous', False))
+                guest_count = int(attendee.get('guest_count', 0)) if attendee.get('guest_count') else 0
                 
-                with self.conn:
-                    cur = self.conn.execute('''
+                # Validate that we have valid data before inserting
+                if not event_date or not full_name:
+                    logging.error(f"Skipping attendee with invalid data: {attendee}")
+                    return None
+                
+                # Ensure we don't pass None values to SQLite
+                if profile_url == '':
+                    profile_url = None
+                
+                conn = self.db_manager.get_connection()
+                with conn:
+                    cur = conn.execute('''
                         INSERT OR IGNORE INTO attendees (event_id, event_date, full_name, first_name, last_name, profile_url, is_anonymous, guest_count)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
-                        event_id,
+                        event_id_int,
                         event_date,
                         full_name,
                         first_name,
@@ -295,9 +368,9 @@ class DFWTRNDBScraper:
                         attendee_id = cur.lastrowid
                     else:
                         # Try to find existing record
-                        row = self.conn.execute('''
+                        row = conn.execute('''
                             SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
-                        ''', (event_id, full_name, event_date)).fetchone()
+                        ''', (event_id_int, full_name, event_date)).fetchone()
                         attendee_id = row['id'] if row else None
                     return attendee_id
             except sqlite3.IntegrityError as e:
@@ -305,11 +378,12 @@ class DFWTRNDBScraper:
                     logging.warning(f"Duplicate attendee skipped: {attendee['name']} for event {original_event_id}")
                     # Try to get existing attendee_id
                     try:
-                        row = self.conn.execute('''
+                        row = conn.execute('''
                             SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
                         ''', (original_event_id, str(attendee['name']).strip(), str(attendee['date']).strip())).fetchone()
                         return row['id'] if row else None
-                    except:
+                    except Exception as lookup_error:
+                        logging.error(f"Error looking up existing attendee: {lookup_error}")
                         return None
                 else:
                     logging.error(f"Integrity error for attendee: {attendee} (event_id={original_event_id}): {e}")
@@ -317,20 +391,32 @@ class DFWTRNDBScraper:
             except Exception as e:
                 logging.error(f"DB insert error for attendee: {attendee} (event_id={original_event_id}): {e}")
                 return None
-        return self._retry_db_write(do_write)
+        
+        try:
+            return self._retry_db_write(do_write)
+        except Exception as e:
+            logging.error(f"Retry wrapper error for attendee {attendee.get('name', 'unknown')}: {e}")
+            return None
 
     def upsert_profile(self, attendee_id, profile_url, profile_data):
         def do_write():
+            profile_id = None  # Initialize to avoid scope issues
+            
             try:
                 if attendee_id is None:
                     logging.error(f"Skipping profile insert because attendee_id is None: profile_url={profile_url}")
                     return None
                 
                 # Ensure all values are the correct type
-                attendee_id = int(attendee_id)
-                profile_url = str(profile_url).strip()
+                attendee_id_int = int(attendee_id)
+                profile_url_str = str(profile_url).strip() if profile_url else ''
                 
-                # Convert profile data values to strings
+                # Validate required fields
+                if not profile_url_str:
+                    logging.error(f"Skipping profile insert because profile_url is empty: attendee_id={attendee_id}")
+                    return None
+                
+                # Convert profile data values to strings, handling None values properly
                 email = str(profile_data.get('email', '')).strip() if profile_data.get('email') else None
                 phone = str(profile_data.get('phone', '')).strip() if profile_data.get('phone') else None
                 company = str(profile_data.get('company', '')).strip() if profile_data.get('company') else None
@@ -341,13 +427,34 @@ class DFWTRNDBScraper:
                 skills = str(profile_data.get('skills', '')).strip() if profile_data.get('skills') else None
                 certifications = str(profile_data.get('certifications', '')).strip() if profile_data.get('certifications') else None
                 
-                with self.conn:
-                    cur = self.conn.execute('''
+                # Convert empty strings to None for SQLite
+                if email == '':
+                    email = None
+                if phone == '':
+                    phone = None
+                if company == '':
+                    company = None
+                if job_title == '':
+                    job_title = None
+                if bio == '':
+                    bio = None
+                if member_since == '':
+                    member_since = None
+                if location == '':
+                    location = None
+                if skills == '':
+                    skills = None
+                if certifications == '':
+                    certifications = None
+                
+                conn = self.db_manager.get_connection()
+                with conn:
+                    cur = conn.execute('''
                         INSERT OR IGNORE INTO attendee_profiles (attendee_id, profile_url, email, phone, company, job_title, bio, member_since, location, skills, certifications)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
-                        attendee_id,
-                        profile_url,
+                        attendee_id_int,
+                        profile_url_str,
                         email,
                         phone,
                         company,
@@ -362,9 +469,9 @@ class DFWTRNDBScraper:
                         profile_id = cur.lastrowid
                     else:
                         # Try to find existing record
-                        row = self.conn.execute('''
+                        row = conn.execute('''
                             SELECT id FROM attendee_profiles WHERE profile_url=?
-                        ''', (profile_url,)).fetchone()
+                        ''', (profile_url_str,)).fetchone()
                         profile_id = row['id'] if row else None
                     
                     # Insert dynamic fields only if we have a valid profile_id
@@ -375,10 +482,11 @@ class DFWTRNDBScraper:
                             try:
                                 field_name = str(k).strip()
                                 field_value = str(v).strip() if v else ''
-                                self.conn.execute('''
-                                    INSERT OR IGNORE INTO profile_fields (profile_id, field_name, field_value, field_type)
-                                    VALUES (?, ?, ?, ?)
-                                ''', (profile_id, field_name, field_value, 'text'))
+                                if field_name and field_value:  # Only insert if both name and value are non-empty
+                                    conn.execute('''
+                                        INSERT OR IGNORE INTO profile_fields (profile_id, field_name, field_value, field_type)
+                                        VALUES (?, ?, ?, ?)
+                                    ''', (profile_id, field_name, field_value, 'text'))
                             except Exception as field_error:
                                 logging.warning(f"Failed to insert profile field {k}: {field_error}")
                     
@@ -388,11 +496,12 @@ class DFWTRNDBScraper:
                     logging.warning(f"Duplicate profile skipped: {profile_url}")
                     # Try to get existing profile_id
                     try:
-                        row = self.conn.execute('''
+                        row = conn.execute('''
                             SELECT id FROM attendee_profiles WHERE profile_url=?
-                        ''', (profile_url,)).fetchone()
+                        ''', (profile_url_str,)).fetchone()
                         return row['id'] if row else None
-                    except:
+                    except Exception as lookup_error:
+                        logging.error(f"Error looking up existing profile: {lookup_error}")
                         return None
                 else:
                     logging.error(f"Integrity error for profile: attendee_id={attendee_id}, profile_url={profile_url}: {e}")
@@ -400,12 +509,14 @@ class DFWTRNDBScraper:
             except Exception as e:
                 logging.error(f"DB insert error for profile: attendee_id={attendee_id}, profile_url={profile_url}: {e}")
                 return None
+        
         return self._retry_db_write(do_write)
 
     def upsert_event(self, event_id, event_name, event_date, event_url, total_attendees):
         def do_write():
-            with self.conn:
-                self.conn.execute('''
+            conn = self.db_manager.get_connection()
+            with conn:
+                conn.execute('''
                     INSERT OR IGNORE INTO events (id, event_name, event_date, event_url, total_attendees)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (event_id, event_name, event_date, event_url, total_attendees))
@@ -423,15 +534,19 @@ class DFWTRNDBScraper:
         logging.info(f"Processing event {event_id}")
         
         # Get or create event record
-        db = self.conn
-        event = db.execute('SELECT * FROM events WHERE id = ?', (event_id,)).fetchone()
-        if not event:
-            # Try to get event name from the page
-            event_name = f"Event {event_id}"
-            db.execute('INSERT INTO events (id, event_name, event_url) VALUES (?, ?, ?)', 
-                      (event_id, event_name, event_url))
-            db.commit()
-            logging.info(f"Created new event record: {event_name}")
+        try:
+            conn = self.db_manager.get_connection()
+            with conn:
+                event = conn.execute('SELECT * FROM events WHERE id = ?', (event_id,)).fetchone()
+                if not event:
+                    # Try to get event name from the page
+                    event_name = f"Event {event_id}"
+                    conn.execute('INSERT INTO events (id, event_name, event_url) VALUES (?, ?, ?)', 
+                                (event_id, event_name, event_url))
+                    logging.info(f"Created new event record: {event_name}")
+        except Exception as e:
+            logging.error(f"Error creating event record for event {event_id}: {e}")
+            return
         
         # Scrape attendees using the proper method
         attendees = self.extract_all_attendees(event_url)
@@ -454,7 +569,8 @@ class DFWTRNDBScraper:
                                 profiles_scraped += 1
                 
             except Exception as e:
-                logging.error(f"Error processing attendee {attendee.get('name', 'unknown')}: {e}")
+                attendee_name = attendee.get('name', 'unknown') if attendee else 'unknown'
+                logging.error(f"Error processing attendee {attendee_name}: {e}")
                 continue
         
         logging.info(f"Event {event_id} complete: {attendees_scraped} attendees, {profiles_scraped} profiles")
@@ -516,58 +632,66 @@ def main():
     
     scraper = DFWTRNDBScraper(delay=args.delay)
     
-    if args.all or (args.url and args.url.upper() == 'ALL'):
-        event_links = scraper.extract_all_event_links()
-        if args.limit is not None:
-            event_links = event_links[:args.limit]
-        logging.info(f"Scraping {len(event_links)} events...")
-        
-        if args.workers > 1:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                futures = {executor.submit(scraper.scrape_and_load, url): url for url in event_links}
-                
-                try:
-                    for future in as_completed(futures):
-                        if shutdown_requested:
-                            logging.info("Shutdown requested. Cancelling remaining tasks...")
-                            # Cancel all pending futures
-                            for f in futures:
-                                f.cancel()
-                            break
-                            
-                        url = futures[future]
-                        try:
-                            attendees, profiles = future.result()
-                            logging.info(f"{url}: {attendees} attendees, {profiles} profiles")
-                        except Exception as e:
-                            logging.error(f"Error scraping {url}: {e}")
-                            
-                except KeyboardInterrupt:
-                    logging.info("Interrupted by user. Shutting down gracefully...")
-                    # Cancel all pending futures
-                    for f in futures:
-                        f.cancel()
-                    # Wait for running tasks to complete
-                    executor.shutdown(wait=True)
-                    logging.info("Shutdown complete.")
+    try:
+        if args.all or (args.url and args.url.upper() == 'ALL'):
+            event_links = scraper.extract_all_event_links()
+            if args.limit is not None:
+                event_links = event_links[:args.limit]
+            logging.info(f"Scraping {len(event_links)} events...")
+            
+            if args.workers > 1:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                    futures = {executor.submit(scraper.scrape_and_load, url): url for url in event_links}
+                    
+                    try:
+                        for future in as_completed(futures):
+                            if shutdown_requested:
+                                logging.info("Shutdown requested. Cancelling remaining tasks...")
+                                # Cancel all pending futures
+                                for f in futures:
+                                    f.cancel()
+                                break
+                                
+                            url = futures[future]
+                            try:
+                                attendees, profiles = future.result()
+                                logging.info(f"{url}: {attendees} attendees, {profiles} profiles")
+                            except Exception as e:
+                                logging.error(f"Error scraping {url}: {e}")
+                                
+                    except KeyboardInterrupt:
+                        logging.info("Interrupted by user. Shutting down gracefully...")
+                        # Cancel all pending futures
+                        for f in futures:
+                            f.cancel()
+                        # Wait for running tasks to complete
+                        executor.shutdown(wait=True)
+                        logging.info("Shutdown complete.")
+            else:
+                for url in event_links:
+                    if shutdown_requested:
+                        logging.info("Shutdown requested. Stopping...")
+                        break
+                    try:
+                        scraper.scrape_and_load(url)
+                    except KeyboardInterrupt:
+                        logging.info("Interrupted by user. Stopping...")
+                        break
+        elif args.url:
+            try:
+                scraper.scrape_and_load(args.url)
+            except KeyboardInterrupt:
+                logging.info("Interrupted by user. Stopping...")
         else:
-            for url in event_links:
-                if shutdown_requested:
-                    logging.info("Shutdown requested. Stopping...")
-                    break
-                try:
-                    scraper.scrape_and_load(url)
-                except KeyboardInterrupt:
-                    logging.info("Interrupted by user. Stopping...")
-                    break
-    elif args.url:
+            parser.print_help()
+    finally:
+        # Always clean up database connections
         try:
-            scraper.scrape_and_load(args.url)
-        except KeyboardInterrupt:
-            logging.info("Interrupted by user. Stopping...")
-    else:
-        parser.print_help()
+            scraper.db_manager.close_all()
+            logging.info("Database connections closed.")
+        except Exception as e:
+            logging.error(f"Error closing database connections: {e}")
 
 if __name__ == "__main__":
     main() 
