@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+
+{% block title %}Search Results - "{{ query }}"{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{{ url_for('index') }}">Dashboard</a></li>
+                <li class="breadcrumb-item active">Search Results</li>
+            </ol>
+        </nav>
+        <h1 class="display-6">
+            <i class="bi bi-search"></i> Search Results
+        </h1>
+        <p class="lead text-muted">
+            Found {{ total_results }} results for "{{ query }}"
+        </p>
+    </div>
+</div>
+
+<!-- Search Form -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <form method="GET" action="{{ url_for('search') }}" class="row g-3">
+                    <div class="col-md-10">
+                        <input type="text" class="form-control form-control-lg" name="q" 
+                               value="{{ query }}" placeholder="Search attendees by name...">
+                    </div>
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-primary btn-lg w-100">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Search Results -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-list-ul"></i> Results ({{ total_results }})
+                </h5>
+                <div>
+                    <span class="badge bg-success me-2">{{ attendees | length }} shown</span>
+                    <span class="badge bg-info">Page {{ page }} of {{ total_pages }}</span>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if attendees %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Event</th>
+                                <th>Registration Date</th>
+                                <th>Profile</th>
+                                <th>Company</th>
+                                <th>Job Title</th>
+                                <th>Email</th>
+                                <th>Phone</th>
+                                <th>Membership Level</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for attendee in attendees %}
+                            <tr>
+                                <td>
+                                    {% if attendee.is_anonymous %}
+                                        <span class="text-muted">
+                                            <i class="bi bi-person-x"></i> Anonymous user
+                                        </span>
+                                    {% else %}
+                                        <strong>{{ attendee.full_name }}</strong>
+                                        {% if attendee.profile_url %}
+                                            <span class="badge profile-badge">Profile</span>
+                                        {% endif %}
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if attendee.event_name %}
+                                        <a href="{{ url_for('event_detail', event_id=attendee.event_id) }}" class="text-decoration-none">
+                                            {{ attendee.event_name }}
+                                        </a>
+                                    {% else %}
+                                        <span class="text-muted">Event {{ attendee.event_id }}</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <small class="text-muted">{{ attendee.event_date | date_format }}</small>
+                                </td>
+                                <td>
+                                    {% if attendee.profile_url %}
+                                        <a href="{{ url_for('attendee_detail', attendee_id=attendee.id) }}" class="btn btn-sm btn-outline-primary">
+                                            <i class="bi bi-person-badge"></i> View
+                                        </a>
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if attendee.company %}
+                                        {{ attendee.company }}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if attendee.job_title %}
+                                        {{ attendee.job_title }}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if attendee.email %}
+                                        <a href="mailto:{{ attendee.email }}">{{ attendee.email }}</a>
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if attendee.phone %}
+                                        {{ attendee.phone }}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if attendee.membership_level %}
+                                        {{ attendee.membership_level }}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if attendee.is_anonymous %}
+                                        <span class="badge anonymous-badge">Anonymous</span>
+                                    {% else %}
+                                        <span class="badge bg-success">Named</span>
+                                    {% endif %}
+                                    {% if attendee.guest_count > 0 %}
+                                        <span class="badge bg-warning ms-1">+{{ attendee.guest_count }}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                {% if total_pages > 1 %}
+                <nav aria-label="Search results pagination">
+                    <ul class="pagination justify-content-center">
+                        {% if page > 1 %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('search', q=query, page=page-1) }}">
+                                <i class="bi bi-chevron-left"></i> Previous
+                            </a>
+                        </li>
+                        {% endif %}
+                        
+                        {% for p in range(1, total_pages + 1) %}
+                            {% if p == page %}
+                            <li class="page-item active">
+                                <span class="page-link">{{ p }}</span>
+                            </li>
+                            {% elif p <= 3 or p > total_pages - 3 or (p >= page - 1 and p <= page + 1) %}
+                            <li class="page-item">
+                                <a class="page-link" href="{{ url_for('search', q=query, page=p) }}">{{ p }}</a>
+                            </li>
+                            {% elif p == 4 and page > 5 %}
+                            <li class="page-item disabled">
+                                <span class="page-link">...</span>
+                            </li>
+                            {% elif p == total_pages - 3 and page < total_pages - 4 %}
+                            <li class="page-item disabled">
+                                <span class="page-link">...</span>
+                            </li>
+                            {% endif %}
+                        {% endfor %}
+                        
+                        {% if page < total_pages %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('search', q=query, page=page+1) }}">
+                                Next <i class="bi bi-chevron-right"></i>
+                            </a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </nav>
+                {% endif %}
+                
+                {% else %}
+                <div class="text-center py-4">
+                    <i class="bi bi-search text-muted" style="font-size: 3rem;"></i>
+                    <p class="text-muted mt-2">No attendees found matching "{{ query }}"</p>
+                    <p class="text-muted">Try searching with different terms or browse all attendees</p>
+                    <a href="{{ url_for('index') }}" class="btn btn-primary">
+                        <i class="bi bi-arrow-left"></i> Back to Dashboard
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Search Tips -->
+{% if attendees %}
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-lightbulb"></i> Search Tips
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <h6><i class="bi bi-person"></i> Search by Name</h6>
+                        <p class="text-muted small">Try first name, last name, or full name</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h6><i class="bi bi-building"></i> Search by Company</h6>
+                        <p class="text-muted small">Use the API endpoint for company searches</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h6><i class="bi bi-calendar"></i> Filter by Event</h6>
+                        <p class="text-muted small">Click on event names to view all attendees</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %} 

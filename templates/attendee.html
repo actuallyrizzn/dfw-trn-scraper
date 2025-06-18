@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Attendee Detail{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1 class="display-6">
+            <i class="bi bi-person-badge"></i> Attendee Detail
+        </h1>
+        {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+        {% endif %}
+    </div>
+</div>
+
+{% if attendee %}
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Profile Information</h5>
+            </div>
+            <div class="card-body">
+                <dl class="row">
+                    <dt class="col-sm-4">Full Name</dt>
+                    <dd class="col-sm-8">{{ attendee.full_name }}</dd>
+                    <dt class="col-sm-4">Company</dt>
+                    <dd class="col-sm-8">{{ attendee.company or '-' }}</dd>
+                    <dt class="col-sm-4">Job Title</dt>
+                    <dd class="col-sm-8">{{ attendee.job_title or '-' }}</dd>
+                    <dt class="col-sm-4">Email</dt>
+                    <dd class="col-sm-8">{% if attendee.email %}<a href="mailto:{{ attendee.email }}">{{ attendee.email }}</a>{% else %}-{% endif %}</dd>
+                    <dt class="col-sm-4">Phone</dt>
+                    <dd class="col-sm-8">{{ attendee.phone or '-' }}</dd>
+                    <dt class="col-sm-4">Bio</dt>
+                    <dd class="col-sm-8">{{ attendee.bio or '-' }}</dd>
+                    <dt class="col-sm-4">Member Since</dt>
+                    <dd class="col-sm-8">{{ attendee.member_since or '-' }}</dd>
+                    <dt class="col-sm-4">Location</dt>
+                    <dd class="col-sm-8">{{ attendee.location or '-' }}</dd>
+                    <dt class="col-sm-4">Skills</dt>
+                    <dd class="col-sm-8">{{ attendee.skills or '-' }}</dd>
+                    <dt class="col-sm-4">Certifications</dt>
+                    <dd class="col-sm-8">{{ attendee.certifications or '-' }}</dd>
+                </dl>
+                {% if attendee.external_profile_url %}
+                <a href="{{ attendee.external_profile_url }}" target="_blank" class="btn btn-outline-primary">
+                    <i class="bi bi-box-arrow-up-right"></i> View on DFWTRN
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %} 

@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}DFWTRN Dashboard - Overview{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1 class="display-5">
+            <i class="bi bi-graph-up"></i> Dashboard Overview
+        </h1>
+        <p class="lead text-muted">Real-time statistics and insights from your DFWTRN attendee data</p>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stats-card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-people-fill text-primary" style="font-size: 2rem;"></i>
+                <h3 class="card-title mt-2">{{ total_attendees }}</h3>
+                <p class="card-text text-muted">Total Attendees</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stats-card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-calendar-event text-success" style="font-size: 2rem;"></i>
+                <h3 class="card-title mt-2">{{ total_events }}</h3>
+                <p class="card-text text-muted">Events Tracked</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stats-card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-person-badge text-info" style="font-size: 2rem;"></i>
+                <h3 class="card-title mt-2">{{ total_profiles }}</h3>
+                <p class="card-text text-muted">Profiles Available</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stats-card h-100">
+            <div class="card-body text-center">
+                <i class="bi bi-percent text-warning" style="font-size: 2rem;"></i>
+                <h3 class="card-title mt-2">{{ "%.1f"|format((total_profiles / total_attendees * 100) if total_attendees > 0 else 0) }}%</h3>
+                <p class="card-text text-muted">Profile Coverage</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Recent Event -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-calendar-check"></i> Most Recent Event
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if recent_event %}
+                <h6 class="card-subtitle mb-2 text-muted">{{ recent_event.event_name }}</h6>
+                <p class="card-text">
+                    <strong>Date:</strong> {{ recent_event.event_date | date_format }}<br>
+                    <strong>Attendees:</strong> {{ recent_event.total_attendees }}<br>
+                    <strong>Event ID:</strong> {{ recent_event.id }}
+                </p>
+                <a href="{{ url_for('event_detail', event_id=recent_event.id) }}" class="btn btn-primary">
+                    <i class="bi bi-eye"></i> View Details
+                </a>
+                {% else %}
+                <p class="text-muted">No events found</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Attendee Breakdown -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-pie-chart"></i> Attendee Breakdown
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col-6">
+                        <h4 class="text-success">{{ named_count }}</h4>
+                        <p class="text-muted">Named Attendees</p>
+                    </div>
+                    <div class="col-6">
+                        <h4 class="text-secondary">{{ anonymous_count }}</h4>
+                        <p class="text-muted">Anonymous Users</p>
+                    </div>
+                </div>
+                <div class="progress mt-3">
+                    <div class="progress-bar bg-success" style="width: {{ (named_count / total_attendees * 100) if total_attendees > 0 else 0 }}%"></div>
+                    <div class="progress-bar bg-secondary" style="width: {{ (anonymous_count / total_attendees * 100) if total_attendees > 0 else 0 }}%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Top Attendees -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-trophy"></i> Most Frequent Attendees
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if top_names %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Rank</th>
+                                <th>Name</th>
+                                <th>Event Count</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for attendee in top_names %}
+                            <tr>
+                                <td>
+                                    {% if loop.index == 1 %}
+                                        <i class="bi bi-trophy-fill text-warning"></i>
+                                    {% elif loop.index == 2 %}
+                                        <i class="bi bi-trophy-fill text-secondary"></i>
+                                    {% elif loop.index == 3 %}
+                                        <i class="bi bi-trophy-fill text-bronze"></i>
+                                    {% else %}
+                                        {{ loop.index }}
+                                    {% endif %}
+                                </td>
+                                <td>{{ attendee.first_name }} {{ attendee.last_name }}</td>
+                                <td>
+                                    <span class="badge bg-primary">{{ attendee.count }}</span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted">No attendee data available</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-lightning"></i> Quick Actions
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3">
+                        <a href="{{ url_for('api_attendees') }}" class="btn btn-outline-primary w-100 mb-2">
+                            <i class="bi bi-download"></i> Export Attendees
+                        </a>
+                    </div>
+                    <div class="col-md-3">
+                        <a href="{{ url_for('api_events') }}" class="btn btn-outline-success w-100 mb-2">
+                            <i class="bi bi-calendar"></i> View Events
+                        </a>
+                    </div>
+                    <div class="col-md-3">
+                        <a href="{{ url_for('search') }}?q=" class="btn btn-outline-info w-100 mb-2">
+                            <i class="bi bi-search"></i> Search Attendees
+                        </a>
+                    </div>
+                    <div class="col-md-3">
+                        {% if recent_event %}
+                        <a href="{{ url_for('event_detail', event_id=recent_event.id) }}" class="btn btn-outline-warning w-100 mb-2">
+                            <i class="bi bi-eye"></i> View Latest Event
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 
