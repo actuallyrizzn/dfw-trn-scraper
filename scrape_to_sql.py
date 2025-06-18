@@ -15,6 +15,7 @@ import sqlite3
 import re
 import logging
 import json
+import concurrent.futures
 
 DB_FILE = 'attendees.db'
 
@@ -125,7 +126,8 @@ class DFWTRNDBScraper:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
         self.delay = delay
-        self.conn = sqlite3.connect(db_file)
+        # Set a longer timeout for SQLite to reduce 'database is locked' errors
+        self.conn = sqlite3.connect(db_file, timeout=30.0, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.ensure_schema()
 
@@ -230,72 +232,91 @@ class DFWTRNDBScraper:
             return {}
         return extract_profile_data_from_html(str(soup))
 
+    def _retry_db_write(self, func, *args, **kwargs):
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if 'database is locked' in str(e):
+                    wait = 2 ** attempt
+                    logging.warning(f"DB is locked, retrying in {wait}s (attempt {attempt+1}/{max_retries})...")
+                    time.sleep(wait)
+                else:
+                    raise
+        raise sqlite3.OperationalError("Max retries exceeded due to database lock.")
+
     def upsert_attendee(self, attendee, event_id):
-        with self.conn:
-            cur = self.conn.execute('''
-                INSERT OR IGNORE INTO attendees (event_id, event_date, full_name, first_name, last_name, profile_url, is_anonymous, guest_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                event_id,
-                attendee['date'],
-                attendee['name'],
-                attendee['first_name'],
-                attendee['last_name'],
-                attendee['profile_url'],
-                attendee['is_anonymous'],
-                attendee['guest_count']
-            ))
-            if cur.lastrowid:
-                attendee_id = cur.lastrowid
-            else:
-                # Get the existing attendee id
-                row = self.conn.execute('''
-                    SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
-                ''', (event_id, attendee['name'], attendee['date'])).fetchone()
-                attendee_id = row['id'] if row else None
-            return attendee_id
+        def do_write():
+            with self.conn:
+                cur = self.conn.execute('''
+                    INSERT OR IGNORE INTO attendees (event_id, event_date, full_name, first_name, last_name, profile_url, is_anonymous, guest_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    event_id,
+                    attendee['date'],
+                    attendee['name'],
+                    attendee['first_name'],
+                    attendee['last_name'],
+                    attendee['profile_url'],
+                    attendee['is_anonymous'],
+                    attendee['guest_count']
+                ))
+                if cur.lastrowid:
+                    attendee_id = cur.lastrowid
+                else:
+                    row = self.conn.execute('''
+                        SELECT id FROM attendees WHERE event_id=? AND full_name=? AND event_date=?
+                    ''', (event_id, attendee['name'], attendee['date'])).fetchone()
+                    attendee_id = row['id'] if row else None
+                return attendee_id
+        return self._retry_db_write(do_write)
 
     def upsert_profile(self, attendee_id, profile_url, profile_data):
-        with self.conn:
-            cur = self.conn.execute('''
-                INSERT OR IGNORE INTO attendee_profiles (attendee_id, profile_url, email, phone, company, job_title, bio, member_since, location, skills, certifications)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                attendee_id,
-                profile_url,
-                profile_data.get('email'),
-                profile_data.get('phone'),
-                profile_data.get('company'),
-                profile_data.get('title') or profile_data.get('job_title'),
-                profile_data.get('bio'),
-                profile_data.get('member since') or profile_data.get('member_since'),
-                profile_data.get('city') or profile_data.get('location'),
-                profile_data.get('skills'),
-                profile_data.get('certifications')
-            ))
-            if cur.lastrowid:
-                profile_id = cur.lastrowid
-            else:
-                row = self.conn.execute('''
-                    SELECT id FROM attendee_profiles WHERE profile_url=?
-                ''', (profile_url,)).fetchone()
-                profile_id = row['id'] if row else None
-            # Insert dynamic fields
-            for k, v in profile_data.items():
-                if k in ['email', 'phone', 'company', 'title', 'job_title', 'bio', 'member since', 'member_since', 'city', 'location', 'skills', 'certifications']:
-                    continue
-                self.conn.execute('''
-                    INSERT INTO profile_fields (profile_id, field_name, field_value, field_type)
-                    VALUES (?, ?, ?, ?)
-                ''', (profile_id, k, v, 'text'))
-            return profile_id
+        def do_write():
+            with self.conn:
+                cur = self.conn.execute('''
+                    INSERT OR IGNORE INTO attendee_profiles (attendee_id, profile_url, email, phone, company, job_title, bio, member_since, location, skills, certifications)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    attendee_id,
+                    profile_url,
+                    profile_data.get('email'),
+                    profile_data.get('phone'),
+                    profile_data.get('company'),
+                    profile_data.get('title') or profile_data.get('job_title'),
+                    profile_data.get('bio'),
+                    profile_data.get('member since') or profile_data.get('member_since'),
+                    profile_data.get('city') or profile_data.get('location'),
+                    profile_data.get('skills'),
+                    profile_data.get('certifications')
+                ))
+                if cur.lastrowid:
+                    profile_id = cur.lastrowid
+                else:
+                    row = self.conn.execute('''
+                        SELECT id FROM attendee_profiles WHERE profile_url=?
+                    ''', (profile_url,)).fetchone()
+                    profile_id = row['id'] if row else None
+                # Insert dynamic fields
+                for k, v in profile_data.items():
+                    if k in ['email', 'phone', 'company', 'title', 'job_title', 'bio', 'member since', 'member_since', 'city', 'location', 'skills', 'certifications']:
+                        continue
+                    self.conn.execute('''
+                        INSERT INTO profile_fields (profile_id, field_name, field_value, field_type)
+                        VALUES (?, ?, ?, ?)
+                    ''', (profile_id, k, v, 'text'))
+                return profile_id
+        return self._retry_db_write(do_write)
 
     def upsert_event(self, event_id, event_name, event_date, event_url, total_attendees):
-        with self.conn:
-            self.conn.execute('''
-                INSERT OR IGNORE INTO events (id, event_name, event_date, event_url, total_attendees)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (event_id, event_name, event_date, event_url, total_attendees))
+        def do_write():
+            with self.conn:
+                self.conn.execute('''
+                    INSERT OR IGNORE INTO events (id, event_name, event_date, event_url, total_attendees)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (event_id, event_name, event_date, event_url, total_attendees))
+        return self._retry_db_write(do_write)
 
     def scrape_and_load(self, event_url):
         # Extract event_id from URL and ensure it's an integer
@@ -410,10 +431,19 @@ def main():
     parser.add_argument('url', nargs='?', help='Event attendee URL to scrape, or "ALL" to scrape all events')
     parser.add_argument('--delay', type=float, default=1.0, help='Delay between requests (seconds)')
     parser.add_argument('--all', action='store_true', help='Scrape all events listed on the DFWTRN Events page')
+    parser.add_argument('--workers', type=int, default=1, help='Number of parallel event workers (default: 1)')
     args = parser.parse_args()
     scraper = DFWTRNDBScraper(delay=args.delay)
     if args.all or (args.url and args.url.upper() == 'ALL'):
-        scraper.scrape_all_events()
+        event_links = scraper.extract_all_event_links()
+        logging.info(f"Starting parallel scrape with {args.workers} workers...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = [executor.submit(scraper.scrape_and_load, url) for url in event_links]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"Worker error: {e}")
     elif args.url:
         scraper.scrape_and_load(args.url)
     else:
