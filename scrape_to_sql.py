@@ -500,6 +500,12 @@ class DFWTRNDBScraper:
 
 # --- CLI ---
 def main():
+    global shutdown_requested
+    
+    # Set up signal handling for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     parser = argparse.ArgumentParser(description="Scrape DFWTRN event attendees and load directly into SQLite DB")
     parser.add_argument('url', nargs='?', help='Event attendee URL to scrape, or "ALL" to scrape all events')
     parser.add_argument('--delay', type=float, default=1.0, help='Delay between requests (seconds)')
@@ -515,22 +521,51 @@ def main():
         if args.limit is not None:
             event_links = event_links[:args.limit]
         logging.info(f"Scraping {len(event_links)} events...")
+        
         if args.workers > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=args.workers) as executor:
                 futures = {executor.submit(scraper.scrape_and_load, url): url for url in event_links}
-                for future in as_completed(futures):
-                    url = futures[future]
-                    try:
-                        attendees, profiles = future.result()
-                        logging.info(f"{url}: {attendees} attendees, {profiles} profiles")
-                    except Exception as e:
-                        logging.error(f"Error scraping {url}: {e}")
+                
+                try:
+                    for future in as_completed(futures):
+                        if shutdown_requested:
+                            logging.info("Shutdown requested. Cancelling remaining tasks...")
+                            # Cancel all pending futures
+                            for f in futures:
+                                f.cancel()
+                            break
+                            
+                        url = futures[future]
+                        try:
+                            attendees, profiles = future.result()
+                            logging.info(f"{url}: {attendees} attendees, {profiles} profiles")
+                        except Exception as e:
+                            logging.error(f"Error scraping {url}: {e}")
+                            
+                except KeyboardInterrupt:
+                    logging.info("Interrupted by user. Shutting down gracefully...")
+                    # Cancel all pending futures
+                    for f in futures:
+                        f.cancel()
+                    # Wait for running tasks to complete
+                    executor.shutdown(wait=True)
+                    logging.info("Shutdown complete.")
         else:
             for url in event_links:
-                scraper.scrape_and_load(url)
+                if shutdown_requested:
+                    logging.info("Shutdown requested. Stopping...")
+                    break
+                try:
+                    scraper.scrape_and_load(url)
+                except KeyboardInterrupt:
+                    logging.info("Interrupted by user. Stopping...")
+                    break
     elif args.url:
-        scraper.scrape_and_load(args.url)
+        try:
+            scraper.scrape_and_load(args.url)
+        except KeyboardInterrupt:
+            logging.info("Interrupted by user. Stopping...")
     else:
         parser.print_help()
 
