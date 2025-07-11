@@ -1,6 +1,9 @@
 # Database files
 attendees.db
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Python cache directories
 __pycache__/
@@ -29,3 +32,4 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+attendees.db-wal
